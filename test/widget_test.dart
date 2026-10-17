@@ -1,30 +1,67 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:video_toolkit/main.dart';
+import 'package:video_toolkit/app.dart';
+import 'package:video_toolkit/models/history_item.dart';
+import 'package:video_toolkit/services/history_repository.dart';
+import 'package:video_toolkit/services/video_compressor_service.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('OptiVideoApp renders Home screen with brand and CTA', (WidgetTester tester) async {
+    final compressorService = VideoCompressorService();
+    final historyRepository = HistoryRepository();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    await tester.pumpWidget(
+      OptiVideoApp(
+        compressorService: compressorService,
+        historyRepository: historyRepository,
+      ),
+    );
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+    await tester.pumpAndSettle();
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    // Verify OptiVideo title is present
+    expect(find.text('OptiVideo'), findsOneWidget);
+
+    // Verify Privacy message is present
+    expect(find.text('100% Offline & Private'), findsOneWidget);
+
+    // Verify Select Video CTA button is present
+    expect(find.text('Select Video'), findsAtLeastNWidgets(1));
+    expect(find.text('Shrink Video Size in Seconds'), findsOneWidget);
+
+    // Verify Empty State is displayed initially
+    expect(find.text('How It Works'), findsOneWidget);
+  });
+
+  testWidgets('HomeScreen renders recent items when history is populated', (WidgetTester tester) async {
+    final compressorService = VideoCompressorService();
+    final historyRepository = HistoryRepository();
+
+    final testItem = HistoryItem(
+      id: 'test_1',
+      fileName: 'nature.mp4',
+      originalPath: '/storage/nature.mp4',
+      compressedPath: '/cache/nature_compressed.mp4',
+      originalSizeBytes: 50 * 1024 * 1024,
+      compressedSizeBytes: 15 * 1024 * 1024,
+      durationMs: 60000,
+      resolution: '1280×720',
+      timestamp: DateTime.now(),
+    );
+
+    historyRepository.historyNotifier.value = [testItem];
+
+    await tester.pumpWidget(
+      OptiVideoApp(
+        compressorService: compressorService,
+        historyRepository: historyRepository,
+      ),
+    );
+
+    await tester.pumpAndSettle();
+
+    // Verify Recent Compressions title appears
+    expect(find.text('Recent Compressions'), findsOneWidget);
+    expect(find.text('nature.mp4'), findsOneWidget);
+    expect(find.text('-70%'), findsOneWidget);
   });
 }
