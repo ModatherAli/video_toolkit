@@ -19,6 +19,10 @@ class CompressionProgress {
   final String? outputPath;
   final int? outputSize;
 
+  int? get compressedSizeBytes => outputSize;
+  String? get errorMessage => message;
+  double get progressFraction => (progress / 100.0).clamp(0.0, 1.0);
+
   const CompressionProgress({
     required this.status,
     this.progress = 0,

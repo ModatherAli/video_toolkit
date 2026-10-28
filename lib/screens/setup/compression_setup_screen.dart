@@ -5,9 +5,11 @@ import '../../services/history_repository.dart';
 import '../../services/video_compressor_service.dart';
 import '../../theme/app_colors.dart';
 import '../../utils/formatters.dart';
+import '../../utils/video_calculator.dart';
 import '../processing/compression_progress_screen.dart';
 import 'widgets/custom_settings_panel.dart';
 import 'widgets/preset_card.dart';
+import 'widgets/quick_sample_preview_dialog.dart';
 import 'widgets/video_summary_card.dart';
 
 class CompressionSetupScreen extends StatefulWidget {
@@ -27,20 +29,28 @@ class CompressionSetupScreen extends StatefulWidget {
 }
 
 class _CompressionSetupScreenState extends State<CompressionSetupScreen> {
+  int _selectedTabIndex = 0; // 0: Fit to App, 1: Smart Presets, 2: Target Size, 3: Advanced
   late CompressionPreset _selectedPreset;
   late CompressionConfig _currentConfig;
+  double _customTargetMB = 10.0;
+  String _selectedCodec = 'H264';
   int _freeStorageBytes = 0;
-  bool _isCustomExpanded = false;
 
   @override
   void initState() {
     super.initState();
-    _selectedPreset = CompressionPreset.balanced; // Default recommended
+    _selectedPreset = CompressionPreset.whatsApp; // Hero feature from search findings
+    _updateConfig();
+    _checkStorage();
+  }
+
+  void _updateConfig() {
     _currentConfig = CompressionConfig.fromPreset(
       preset: _selectedPreset,
       source: widget.sourceVideo,
+      customTargetMB: _customTargetMB,
+      videoCodec: _selectedCodec,
     );
-    _checkStorage();
   }
 
   Future<void> _checkStorage() async {
@@ -55,21 +65,29 @@ class _CompressionSetupScreenState extends State<CompressionSetupScreen> {
   void _onPresetSelected(CompressionPreset preset) {
     setState(() {
       _selectedPreset = preset;
-      if (preset == CompressionPreset.custom) {
-        _isCustomExpanded = true;
-      } else {
-        _isCustomExpanded = false;
-        _currentConfig = CompressionConfig.fromPreset(
-          preset: preset,
-          source: widget.sourceVideo,
-        );
-      }
+      _updateConfig();
     });
   }
 
+  Future<void> _showQuickSample() async {
+    final proceed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => QuickSamplePreviewDialog(
+        sourceVideo: widget.sourceVideo,
+        config: _currentConfig,
+        compressorService: widget.compressorService,
+      ),
+    );
+
+    if (proceed == true && mounted) {
+      _startCompression();
+    }
+  }
+
   Future<void> _startCompression() async {
-    // Storage check: ensure at least 50MB and source size available
-    if (_freeStorageBytes > 0 && _freeStorageBytes < (widget.sourceVideo.fileSize + 50 * 1024 * 1024)) {
+    if (_freeStorageBytes > 0 &&
+        _freeStorageBytes < (widget.sourceVideo.fileSize + 50 * 1024 * 1024)) {
       final proceed = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -113,18 +131,40 @@ class _CompressionSetupScreenState extends State<CompressionSetupScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
+
+    final estimatedBytes = VideoCalculator.estimateCompressedSizeBytes(
+      videoBitrate: _currentConfig.videoBitrate,
+      durationMs: widget.sourceVideo.durationMs,
+    );
+    final savingsPct = widget.sourceVideo.fileSize > 0
+        ? (((widget.sourceVideo.fileSize - estimatedBytes) / widget.sourceVideo.fileSize) * 100)
+            .clamp(0.0, 99.0)
+        : 0.0;
+    final quality = VideoCalculator.estimateQualityDescription(
+      videoBitrate: _currentConfig.videoBitrate,
+      width: _currentConfig.targetWidth,
+      height: _currentConfig.targetHeight,
+    );
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Configure Compression'),
+        actions: [
+          IconButton(
+            tooltip: 'Quick 5s Sample Preview',
+            icon: const Icon(Icons.play_circle_outline_rounded, color: AppColors.primary),
+            onPressed: _showQuickSample,
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Video Summary Card
             VideoSummaryCard(
               video: widget.sourceVideo,
               onPreview: () {
@@ -145,48 +185,141 @@ class _CompressionSetupScreenState extends State<CompressionSetupScreen> {
                 }
               },
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 18),
 
-            // Presets Header
-            Text(
-              'Select Compression Preset',
-              style: TextStyle(
-                fontSize: 17,
-                fontWeight: FontWeight.w700,
-                color: isDark ? AppColors.textPrimaryDark : AppColors.textPrimaryLight,
-                letterSpacing: -0.3,
+            // Mode Selector Tabs
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _buildTabChip(0, 'Fit to App', Icons.apps_rounded),
+                  const SizedBox(width: 8),
+                  _buildTabChip(1, 'Target Size', Icons.straighten_rounded),
+                  const SizedBox(width: 8),
+                  _buildTabChip(2, 'Smart Quality', Icons.auto_awesome_rounded),
+                  const SizedBox(width: 8),
+                  _buildTabChip(3, 'Advanced', Icons.tune_rounded),
+                ],
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 16),
 
-            // Presets List
-            PresetCard(
-              preset: CompressionPreset.balanced,
-              isSelected: _selectedPreset == CompressionPreset.balanced,
-              sourceVideo: widget.sourceVideo,
-              onTap: () => _onPresetSelected(CompressionPreset.balanced),
-            ),
-            PresetCard(
-              preset: CompressionPreset.highQuality,
-              isSelected: _selectedPreset == CompressionPreset.highQuality,
-              sourceVideo: widget.sourceVideo,
-              onTap: () => _onPresetSelected(CompressionPreset.highQuality),
-            ),
-            PresetCard(
-              preset: CompressionPreset.smallSize,
-              isSelected: _selectedPreset == CompressionPreset.smallSize,
-              sourceVideo: widget.sourceVideo,
-              onTap: () => _onPresetSelected(CompressionPreset.smallSize),
-            ),
-            PresetCard(
-              preset: CompressionPreset.custom,
-              isSelected: _selectedPreset == CompressionPreset.custom,
-              sourceVideo: widget.sourceVideo,
-              onTap: () => _onPresetSelected(CompressionPreset.custom),
-            ),
-
-            // Custom Settings Panel (Collapsible)
-            if (_isCustomExpanded || _selectedPreset == CompressionPreset.custom)
+            // Tab Content
+            if (_selectedTabIndex == 0) ...[
+              PresetCard(
+                preset: CompressionPreset.whatsApp,
+                isSelected: _selectedPreset == CompressionPreset.whatsApp,
+                sourceVideo: widget.sourceVideo,
+                onTap: () => _onPresetSelected(CompressionPreset.whatsApp),
+              ),
+              const SizedBox(height: 10),
+              PresetCard(
+                preset: CompressionPreset.discord,
+                isSelected: _selectedPreset == CompressionPreset.discord,
+                sourceVideo: widget.sourceVideo,
+                onTap: () => _onPresetSelected(CompressionPreset.discord),
+              ),
+              const SizedBox(height: 10),
+              PresetCard(
+                preset: CompressionPreset.email,
+                isSelected: _selectedPreset == CompressionPreset.email,
+                sourceVideo: widget.sourceVideo,
+                onTap: () => _onPresetSelected(CompressionPreset.email),
+              ),
+            ] else if (_selectedTabIndex == 1) ...[
+              // Target Size Slider Card
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: isDark ? AppColors.surfaceDark : AppColors.surfaceLight,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(
+                    color: _selectedPreset == CompressionPreset.targetSize
+                        ? colorScheme.primary
+                        : colorScheme.outlineVariant.withAlpha(120),
+                    width: _selectedPreset == CompressionPreset.targetSize ? 2.0 : 1.0,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.speed_rounded, color: AppColors.primary, size: 22),
+                        const SizedBox(width: 10),
+                        const Text(
+                          'Choose Max File Size',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                        const Spacer(),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: colorScheme.primaryContainer,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            '< ${_customTargetMB.toStringAsFixed(1)} MB',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              color: colorScheme.onPrimaryContainer,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    Slider(
+                      value: _customTargetMB,
+                      min: 3.0,
+                      max: 100.0,
+                      divisions: 97,
+                      label: '${_customTargetMB.toStringAsFixed(0)} MB',
+                      onChanged: (val) {
+                        setState(() {
+                          _selectedPreset = CompressionPreset.targetSize;
+                          _customTargetMB = val;
+                          _updateConfig();
+                        });
+                      },
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _buildQuickTargetBtn(5.0),
+                        _buildQuickTargetBtn(10.0),
+                        _buildQuickTargetBtn(16.0),
+                        _buildQuickTargetBtn(25.0),
+                        _buildQuickTargetBtn(50.0),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ] else if (_selectedTabIndex == 2) ...[
+              PresetCard(
+                preset: CompressionPreset.balanced,
+                isSelected: _selectedPreset == CompressionPreset.balanced,
+                sourceVideo: widget.sourceVideo,
+                onTap: () => _onPresetSelected(CompressionPreset.balanced),
+              ),
+              const SizedBox(height: 10),
+              PresetCard(
+                preset: CompressionPreset.highQuality,
+                isSelected: _selectedPreset == CompressionPreset.highQuality,
+                sourceVideo: widget.sourceVideo,
+                onTap: () => _onPresetSelected(CompressionPreset.highQuality),
+              ),
+              const SizedBox(height: 10),
+              PresetCard(
+                preset: CompressionPreset.smallSize,
+                isSelected: _selectedPreset == CompressionPreset.smallSize,
+                sourceVideo: widget.sourceVideo,
+                onTap: () => _onPresetSelected(CompressionPreset.smallSize),
+              ),
+            ] else ...[
+              // Advanced / Custom Panel
               CustomSettingsPanel(
                 sourceVideo: widget.sourceVideo,
                 currentConfig: _currentConfig,
@@ -196,45 +329,208 @@ class _CompressionSetupScreenState extends State<CompressionSetupScreen> {
                   });
                 },
               ),
+            ],
 
-            const SizedBox(height: 12),
+            const SizedBox(height: 18),
 
-            // Quality & Privacy note
+            // Codec Selection Pills (Compatible H.264 vs Smaller H.265)
             Container(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
                 color: isDark ? AppColors.surfaceVariantDark : AppColors.surfaceVariantLight,
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(14),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.info_outline_rounded, size: 18, color: AppColors.primary),
+                  const Icon(Icons.memory_rounded, size: 20, color: AppColors.primary),
                   const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'The original video will NOT be modified or overwritten. Output is encoded to universal MP4 with AAC audio.',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight,
-                        height: 1.3,
-                      ),
-                    ),
+                  const Text('Video Codec:', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                  const Spacer(),
+                  ChoiceChip(
+                    label: const Text('H.264 (Compatible)', style: TextStyle(fontSize: 11)),
+                    selected: _selectedCodec == 'H264',
+                    onSelected: (sel) {
+                      if (sel) {
+                        setState(() {
+                          _selectedCodec = 'H264';
+                          _updateConfig();
+                        });
+                      }
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    label: const Text('H.265 (Smaller)', style: TextStyle(fontSize: 11)),
+                    selected: _selectedCodec == 'H265',
+                    onSelected: (sel) {
+                      if (sel) {
+                        setState(() {
+                          _selectedCodec = 'H265';
+                          _updateConfig();
+                        });
+                      }
+                    },
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 28),
 
-            // Start Compression CTA
-            FilledButton.icon(
-              onPressed: _startCompression,
-              icon: const Icon(Icons.bolt_rounded, size: 22),
-              label: const Text('Start Compression'),
+            const SizedBox(height: 18),
+
+            // Quality & Estimation Dashboard Card
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: colorScheme.primaryContainer.withAlpha(50),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: colorScheme.primary.withAlpha(70)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.insights_rounded, color: AppColors.primary, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Estimated Output • ${Formatters.formatBytes(estimatedBytes)}',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
+                      const Spacer(),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.success.withAlpha(40),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          '-${savingsPct.toStringAsFixed(0)}% space',
+                          style: const TextStyle(
+                            color: AppColors.success,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: colorScheme.primary,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          quality.label,
+                          style: TextStyle(
+                            color: colorScheme.onPrimary,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          quality.detail,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isDark ? AppColors.textSecondaryDark : AppColors.textSecondaryLight,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 24),
+
+            // Action Buttons: Quick 5s Sample & Start Compression
+            Row(
+              children: [
+                Expanded(
+                  flex: 2,
+                  child: OutlinedButton.icon(
+                    onPressed: _showQuickSample,
+                    icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                    label: const Text('Quick 5s Sample'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 3,
+                  child: FilledButton.icon(
+                    onPressed: _startCompression,
+                    icon: const Icon(Icons.bolt_rounded, size: 22),
+                    label: const Text('Compress Video'),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 32),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildTabChip(int index, String label, IconData icon) {
+    final isSelected = _selectedTabIndex == index;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return FilterChip(
+      selected: isSelected,
+      showCheckmark: false,
+      avatar: Icon(
+        icon,
+        size: 16,
+        color: isSelected ? colorScheme.onPrimary : colorScheme.onSurfaceVariant,
+      ),
+      label: Text(label),
+      labelStyle: TextStyle(
+        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+        color: isSelected ? colorScheme.onPrimary : colorScheme.onSurfaceVariant,
+      ),
+      selectedColor: colorScheme.primary,
+      onSelected: (selected) {
+        if (selected) {
+          setState(() {
+            _selectedTabIndex = index;
+            if (index == 0) {
+              _selectedPreset = CompressionPreset.whatsApp;
+            } else if (index == 1) {
+              _selectedPreset = CompressionPreset.targetSize;
+            } else if (index == 2) {
+              _selectedPreset = CompressionPreset.balanced;
+            } else {
+              _selectedPreset = CompressionPreset.custom;
+            }
+            _updateConfig();
+          });
+        }
+      },
+    );
+  }
+
+  Widget _buildQuickTargetBtn(double mb) {
+    final isSelected = (_customTargetMB - mb).abs() < 0.1 && _selectedPreset == CompressionPreset.targetSize;
+    return ChoiceChip(
+      label: Text('${mb.toInt()}MB', style: const TextStyle(fontSize: 11)),
+      selected: isSelected,
+      onSelected: (sel) {
+        if (sel) {
+          setState(() {
+            _selectedPreset = CompressionPreset.targetSize;
+            _customTargetMB = mb;
+            _updateConfig();
+          });
+        }
+      },
     );
   }
 }

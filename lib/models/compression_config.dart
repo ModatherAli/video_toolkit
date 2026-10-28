@@ -5,6 +5,10 @@ enum CompressionPreset {
   highQuality,
   balanced,
   smallSize,
+  whatsApp,
+  discord,
+  email,
+  targetSize,
   custom;
 
   String get title {
@@ -15,6 +19,14 @@ enum CompressionPreset {
         return 'Balanced';
       case CompressionPreset.smallSize:
         return 'Small Size';
+      case CompressionPreset.whatsApp:
+        return 'Fit for WhatsApp';
+      case CompressionPreset.discord:
+        return 'Fit for Discord';
+      case CompressionPreset.email:
+        return 'Fit for Email';
+      case CompressionPreset.targetSize:
+        return 'Target File Size';
       case CompressionPreset.custom:
         return 'Custom Settings';
     }
@@ -25,9 +37,17 @@ enum CompressionPreset {
       case CompressionPreset.highQuality:
         return 'Preserve resolution & sharp detail with moderate compression';
       case CompressionPreset.balanced:
-        return 'Best balance of quality & file size. Ideal for messaging & social apps';
+        return 'Best balance of quality & file size. Ideal for general social sharing';
       case CompressionPreset.smallSize:
-        return 'Maximum space savings. Scaled to 480p for fast sending';
+        return 'Maximum space savings. Scaled to 480p for ultra-light weight';
+      case CompressionPreset.whatsApp:
+        return 'Optimized to land under 14 MB (WhatsApp media limit is 16 MB)';
+      case CompressionPreset.discord:
+        return 'Compressed to under 9 MB for standard free Discord upload limit';
+      case CompressionPreset.email:
+        return 'Compressed to under 20 MB for standard email attachments (25 MB limit)';
+      case CompressionPreset.targetSize:
+        return 'Enter exact target size in MB; resolution & bitrate adapt automatically';
       case CompressionPreset.custom:
         return 'Manually customize target resolution, bitrate, and audio';
     }
@@ -37,10 +57,18 @@ enum CompressionPreset {
     switch (this) {
       case CompressionPreset.balanced:
         return 'RECOMMENDED';
+      case CompressionPreset.whatsApp:
+        return 'POPULAR';
       default:
         return null;
     }
   }
+
+  bool get isAppPreset =>
+      this == CompressionPreset.whatsApp ||
+      this == CompressionPreset.discord ||
+      this == CompressionPreset.email ||
+      this == CompressionPreset.targetSize;
 }
 
 class CompressionConfig {
@@ -49,8 +77,9 @@ class CompressionConfig {
   final int targetHeight;
   final int videoBitrate; // in bps (e.g. 2_000_000)
   final bool preserveAudio;
-  final String videoCodec; // "H264"
+  final String videoCodec; // "H264" or "H265"
   final String audioCodec; // "AAC"
+  final double? targetFileSizeMB;
 
   const CompressionConfig({
     required this.preset,
@@ -60,20 +89,23 @@ class CompressionConfig {
     this.preserveAudio = true,
     this.videoCodec = 'H264',
     this.audioCodec = 'AAC',
+    this.targetFileSizeMB,
   });
 
   /// Factory to generate optimal encoder settings for a preset based on the source video.
   factory CompressionConfig.fromPreset({
     required CompressionPreset preset,
     required VideoInfo source,
+    double? customTargetMB,
+    String videoCodec = 'H264',
   }) {
     int targetWidth;
     int targetHeight;
     int targetBitrate;
+    double? targetMB = customTargetMB;
 
     switch (preset) {
       case CompressionPreset.highQuality:
-        // Cap at 1080p if source is 4K, otherwise preserve source resolution (no upscaling)
         final dims = VideoCalculator.calculateDimensions(
           sourceWidth: source.width,
           sourceHeight: source.height,
@@ -90,7 +122,6 @@ class CompressionConfig {
         break;
 
       case CompressionPreset.balanced:
-        // Cap at 720p (no upscaling)
         final dims = VideoCalculator.calculateDimensions(
           sourceWidth: source.width,
           sourceHeight: source.height,
@@ -107,7 +138,6 @@ class CompressionConfig {
         break;
 
       case CompressionPreset.smallSize:
-        // Cap at 480p (no upscaling)
         final dims = VideoCalculator.calculateDimensions(
           sourceWidth: source.width,
           sourceHeight: source.height,
@@ -123,11 +153,89 @@ class CompressionConfig {
         );
         break;
 
+      case CompressionPreset.whatsApp:
+        targetMB = 14.0;
+        final targetBytes = (targetMB * 1024 * 1024).round();
+        targetBitrate = VideoCalculator.calculateBitrateForTargetSize(
+          targetSizeBytes: targetBytes,
+          durationMs: source.durationMs,
+        );
+        final maxDim = VideoCalculator.getRecommendedMaxDimensionForBitrate(targetBitrate);
+        final dims = VideoCalculator.calculateDimensions(
+          sourceWidth: source.width,
+          sourceHeight: source.height,
+          maxDimension: maxDim,
+        );
+        targetWidth = dims.$1;
+        targetHeight = dims.$2;
+        break;
+
+      case CompressionPreset.discord:
+        targetMB = 9.0;
+        final targetBytes = (targetMB * 1024 * 1024).round();
+        targetBitrate = VideoCalculator.calculateBitrateForTargetSize(
+          targetSizeBytes: targetBytes,
+          durationMs: source.durationMs,
+        );
+        final maxDim = VideoCalculator.getRecommendedMaxDimensionForBitrate(targetBitrate);
+        final dims = VideoCalculator.calculateDimensions(
+          sourceWidth: source.width,
+          sourceHeight: source.height,
+          maxDimension: maxDim,
+        );
+        targetWidth = dims.$1;
+        targetHeight = dims.$2;
+        break;
+
+      case CompressionPreset.email:
+        targetMB = 20.0;
+        final targetBytes = (targetMB * 1024 * 1024).round();
+        targetBitrate = VideoCalculator.calculateBitrateForTargetSize(
+          targetSizeBytes: targetBytes,
+          durationMs: source.durationMs,
+        );
+        final maxDim = VideoCalculator.getRecommendedMaxDimensionForBitrate(targetBitrate);
+        final dims = VideoCalculator.calculateDimensions(
+          sourceWidth: source.width,
+          sourceHeight: source.height,
+          maxDimension: maxDim,
+        );
+        targetWidth = dims.$1;
+        targetHeight = dims.$2;
+        break;
+
+      case CompressionPreset.targetSize:
+        targetMB ??= 10.0;
+        final targetBytes = (targetMB * 1024 * 1024).round();
+        targetBitrate = VideoCalculator.calculateBitrateForTargetSize(
+          targetSizeBytes: targetBytes,
+          durationMs: source.durationMs,
+        );
+        final maxDim = VideoCalculator.getRecommendedMaxDimensionForBitrate(targetBitrate);
+        final dims = VideoCalculator.calculateDimensions(
+          sourceWidth: source.width,
+          sourceHeight: source.height,
+          maxDimension: maxDim,
+        );
+        targetWidth = dims.$1;
+        targetHeight = dims.$2;
+        break;
+
       case CompressionPreset.custom:
         targetWidth = source.width;
         targetHeight = source.height;
         targetBitrate = source.bitrate > 0 ? (source.bitrate * 0.7).round() : 2000000;
         break;
+    }
+
+    // H.265 (HEVC) delivers equivalent visual quality at ~30% lower bitrate
+    if (videoCodec == 'H265') {
+      targetBitrate = (targetBitrate * 0.70).round().clamp(120000, 20000000);
+    }
+
+    // Safety guard: if output bitrate exceeds source bitrate, don't bloat file
+    if (source.bitrate > 100000 && targetBitrate > source.bitrate) {
+      targetBitrate = (source.bitrate * 0.95).round();
     }
 
     return CompressionConfig(
@@ -136,8 +244,9 @@ class CompressionConfig {
       targetHeight: targetHeight,
       videoBitrate: targetBitrate,
       preserveAudio: true,
-      videoCodec: 'H264',
+      videoCodec: videoCodec,
       audioCodec: 'AAC',
+      targetFileSizeMB: targetMB,
     );
   }
 
@@ -149,6 +258,7 @@ class CompressionConfig {
     bool? preserveAudio,
     String? videoCodec,
     String? audioCodec,
+    double? targetFileSizeMB,
   }) {
     return CompressionConfig(
       preset: preset ?? this.preset,
@@ -158,6 +268,7 @@ class CompressionConfig {
       preserveAudio: preserveAudio ?? this.preserveAudio,
       videoCodec: videoCodec ?? this.videoCodec,
       audioCodec: audioCodec ?? this.audioCodec,
+      targetFileSizeMB: targetFileSizeMB ?? this.targetFileSizeMB,
     );
   }
 
@@ -171,6 +282,7 @@ class CompressionConfig {
       'preserveAudio': preserveAudio,
       'videoCodec': videoCodec,
       'audioCodec': audioCodec,
+      'targetFileSizeMB': targetFileSizeMB,
     };
   }
 }

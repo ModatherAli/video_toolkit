@@ -56,6 +56,9 @@ class VideoInfo {
     };
   }
 
+  int get fileSizeBytes => fileSize;
+  int get durationMs => duration.inMilliseconds;
+
   bool get isPortrait => height > width;
 
   double get aspectRatio {

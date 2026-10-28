@@ -60,16 +60,18 @@ class RecentCompressionsList extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        ListView.separated(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: displayItems.length,
-          separatorBuilder: (_, _) => const SizedBox(height: 10),
-          itemBuilder: (context, index) {
-            final item = displayItems[index];
-            final fileExists = File(item.compressedPath).existsSync();
+        for (var i = 0; i < displayItems.length; i++) ...[
+          if (i > 0) const SizedBox(height: 10),
+          _buildItem(displayItems[i], isDark),
+        ],
+      ],
+    );
+  }
 
-            return Container(
+  Widget _buildItem(HistoryItem item, bool isDark) {
+    final fileExists = File(item.compressedPath).existsSync();
+
+    return Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: isDark ? AppColors.surfaceDark : AppColors.surfaceLight,
@@ -233,10 +235,6 @@ class RecentCompressionsList extends StatelessWidget {
                 ],
               ),
             );
-          },
-        ),
-      ],
-    );
   }
 
   Widget _buildEmptyState(BuildContext context, bool isDark) {

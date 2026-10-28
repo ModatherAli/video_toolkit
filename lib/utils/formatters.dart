@@ -16,11 +16,14 @@ class Formatters {
     return '${size.toStringAsFixed(decimals)} ${suffixes[i]}';
   }
 
-  /// Formats duration into MM:SS or HH:MM:SS.
-  static String formatDuration(Duration duration) {
-    final hours = duration.inHours;
-    final minutes = duration.inMinutes.remainder(60);
-    final seconds = duration.inSeconds.remainder(60);
+  /// Formats duration (either Duration or milliseconds int) into MM:SS or HH:MM:SS.
+  static String formatDuration(dynamic duration) {
+    final Duration d = duration is Duration
+        ? duration
+        : Duration(milliseconds: (duration is num ? duration.toInt() : 0));
+    final hours = d.inHours;
+    final minutes = d.inMinutes.remainder(60);
+    final seconds = d.inSeconds.remainder(60);
 
     if (hours > 0) {
       return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';

@@ -11,6 +11,7 @@ class AppColors {
 
   // Accent / Savings palette - Emerald Green
   static const Color savings = Color(0xFF10B981);
+  static const Color success = savings;
   static const Color savingsDark = Color(0xFF059669);
   static const Color savingsContainerLight = Color(0xFFECFDF5);
   static const Color savingsContainerDark = Color(0xFF064E3B);

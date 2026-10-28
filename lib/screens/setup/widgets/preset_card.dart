@@ -7,6 +7,7 @@ class PresetCard extends StatelessWidget {
   final CompressionPreset preset;
   final bool isSelected;
   final VideoInfo sourceVideo;
+  final double? customTargetMB;
   final VoidCallback onTap;
 
   const PresetCard({
@@ -14,6 +15,7 @@ class PresetCard extends StatelessWidget {
     required this.preset,
     required this.isSelected,
     required this.sourceVideo,
+    this.customTargetMB,
     required this.onTap,
   });
 
@@ -21,8 +23,12 @@ class PresetCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final isRecommended = preset == CompressionPreset.balanced;
-    final config = CompressionConfig.fromPreset(preset: preset, source: sourceVideo);
+    final badge = preset.badge;
+    final config = CompressionConfig.fromPreset(
+      preset: preset,
+      source: sourceVideo,
+      customTargetMB: customTargetMB,
+    );
 
     return Material(
       color: isSelected
@@ -67,7 +73,7 @@ class PresetCard extends StatelessWidget {
                             fontWeight: FontWeight.w700,
                           ),
                         ),
-                        if (isRecommended) ...[
+                        if (badge != null) ...[
                           const SizedBox(width: 8),
                           Container(
                             padding: const EdgeInsets.symmetric(
@@ -79,7 +85,7 @@ class PresetCard extends StatelessWidget {
                               borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
-                              'RECOMMENDED',
+                              badge,
                               style: TextStyle(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w800,
@@ -105,9 +111,16 @@ class PresetCard extends StatelessWidget {
                         spacing: 8,
                         runSpacing: 4,
                         children: [
+                          if (config.targetFileSizeMB != null)
+                            _buildSpecChip(
+                              context,
+                              'Target: < ${config.targetFileSizeMB!.toStringAsFixed(1)} MB',
+                              colorScheme,
+                              isHighlight: true,
+                            ),
                           _buildSpecChip(
                             context,
-                            'Target: ${config.targetWidth}×${config.targetHeight}',
+                            'Scale: ${config.targetWidth}×${config.targetHeight}',
                             colorScheme,
                           ),
                           _buildSpecChip(
@@ -117,7 +130,7 @@ class PresetCard extends StatelessWidget {
                           ),
                           _buildSpecChip(
                             context,
-                            'Audio: AAC',
+                            'Codec: ${config.videoCodec}',
                             colorScheme,
                           ),
                         ],
@@ -133,19 +146,29 @@ class PresetCard extends StatelessWidget {
     );
   }
 
-  Widget _buildSpecChip(BuildContext context, String text, ColorScheme colorScheme) {
+  Widget _buildSpecChip(
+    BuildContext context,
+    String text,
+    ColorScheme colorScheme, {
+    bool isHighlight = false,
+  }) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest.withAlpha(120),
+        color: isHighlight
+            ? colorScheme.primary.withAlpha(35)
+            : colorScheme.surfaceContainerHighest.withAlpha(120),
         borderRadius: BorderRadius.circular(6),
+        border: isHighlight
+            ? Border.all(color: colorScheme.primary.withAlpha(80))
+            : null,
       ),
       child: Text(
         text,
         style: TextStyle(
           fontSize: 11,
-          fontWeight: FontWeight.w600,
-          color: colorScheme.onSurfaceVariant,
+          fontWeight: isHighlight ? FontWeight.w700 : FontWeight.w600,
+          color: isHighlight ? colorScheme.primary : colorScheme.onSurfaceVariant,
         ),
       ),
     );

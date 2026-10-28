@@ -2,6 +2,10 @@
     <!-- Legacy storage permissions for Android 9 and lower. Android 10+ uses Scoped Storage & MediaStore without permissions. Note: INTERNET permission is intentionally omitted for 100% offline privacy -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="OptiVideo"
@@ -45,6 +49,11 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <service
+            android:name=".CompressionForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

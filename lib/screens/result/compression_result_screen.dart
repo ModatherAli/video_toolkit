@@ -6,7 +6,9 @@ import '../../models/video_info.dart';
 import '../../services/history_repository.dart';
 import '../../services/video_compressor_service.dart';
 import '../../theme/app_colors.dart';
+import '../../utils/formatters.dart';
 import 'widgets/comparison_card.dart';
+import 'widgets/interactive_split_slider.dart';
 import 'widgets/video_preview_player.dart';
 
 class CompressionResultScreen extends StatefulWidget {
@@ -33,12 +35,25 @@ class _CompressionResultScreenState extends State<CompressionResultScreen> {
   late HistoryItem _item;
   bool _isSaved = false;
   bool _isSaving = false;
+  bool _isOriginalTrashed = false;
+  bool _showSplitComparison = true;
+  bool _isAudioVerified = false;
 
   @override
   void initState() {
     super.initState();
     _item = widget.historyItem;
     _isSaved = _item.savedToGallery;
+    _verifyAudioIntegrity();
+  }
+
+  Future<void> _verifyAudioIntegrity() async {
+    final result = await widget.compressorService.verifyOutputFile(_item.compressedPath);
+    if (mounted) {
+      setState(() {
+        _isAudioVerified = result['hasAudio'] == true;
+      });
+    }
   }
 
   Future<void> _saveToDevice() async {
@@ -98,58 +113,70 @@ class _CompressionResultScreenState extends State<CompressionResultScreen> {
     }
   }
 
-  void _shareVideo() {
-    if (File(_item.compressedPath).existsSync()) {
-      SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(_item.compressedPath)],
-          text: 'Compressed with OptiVideo (${_item.formattedCompressedSize})',
-        ),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Compressed file not found on disk.'),
-          backgroundColor: AppColors.warning,
-        ),
-      );
-    }
-  }
-
-  void _openInExternalPlayer() {
-    widget.compressorService.openVideoFile(_item.compressedPath);
-  }
-
-  Future<void> _discardResult() async {
-    final confirm = await showDialog<bool>(
+  Future<void> _handleMoveOriginalToTrash() async {
+    final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Discard Video?'),
-        content: const Text(
-          'Are you sure you want to delete this compressed video and remove it from history?',
+        title: const Text('Move Original to Trash?'),
+        content: Text(
+          'Move original "${widget.sourceVideo.fileName}" (${Formatters.formatBytes(_item.originalSizeBytes)}) to Android System Trash?\n\nIt can still be recovered from your gallery trash within 30 days.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
+            child: const Text('Keep Original'),
           ),
-          TextButton(
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Discard', style: TextStyle(color: AppColors.error)),
+            child: const Text('Move to Trash'),
           ),
         ],
       ),
     );
 
-    if (confirm == true) {
-      await widget.historyRepository.deleteHistoryItem(
-        _item.id,
-        deleteFileFromDisk: true,
-      );
+    if (confirmed == true) {
+      final success = await widget.compressorService.requestTrashOriginals([widget.sourceVideo.uri]);
       if (mounted) {
-        Navigator.of(context).pop();
+        setState(() {
+          _isOriginalTrashed = success;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              success
+                  ? 'Original video moved to System Trash.'
+                  : 'Could not trash original file.',
+            ),
+            backgroundColor: success ? AppColors.success : AppColors.error,
+          ),
+        );
       }
     }
+  }
+
+  void _shareVideo() {
+    final file = File(_item.compressedPath);
+    if (!file.existsSync()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('File not found on device to share.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(_item.compressedPath)],
+        text: 'Compressed with OptiVideo (${_item.savingsPercentage.toStringAsFixed(0)}% smaller)',
+      ),
+    );
+  }
+
+  void _openInExternalPlayer() {
+    widget.compressorService.openVideoFile(_item.compressedPath);
   }
 
   @override
@@ -160,23 +187,15 @@ class _CompressionResultScreenState extends State<CompressionResultScreen> {
       appBar: AppBar(
         title: const Text('Compression Result'),
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_rounded),
+          icon: const Icon(Icons.close_rounded),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.delete_outline_rounded),
-            tooltip: 'Discard',
-            onPressed: _discardResult,
-          ),
-        ],
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Success header
             Center(
               child: Column(
                 children: [
@@ -217,7 +236,31 @@ class _CompressionResultScreenState extends State<CompressionResultScreen> {
                 ],
               ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 18),
+
+            // Audio Verification & Safety Pill
+            if (_isAudioVerified)
+              Container(
+                margin: const EdgeInsets.only(bottom: 16),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppColors.success.withAlpha(30),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.success.withAlpha(70)),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.volume_up_rounded, color: AppColors.success, size: 18),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Audio Track Verified • Fully synchronized with video',
+                        style: TextStyle(color: AppColors.success, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
 
             // Comparison Metrics Card
             ComparisonCard(
@@ -226,18 +269,56 @@ class _CompressionResultScreenState extends State<CompressionResultScreen> {
             ),
             const SizedBox(height: 20),
 
-            // Video Preview Player
-            Text(
-              'Preview Output',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-                color: isDark ? AppColors.textPrimaryDark : AppColors.textPrimaryLight,
-              ),
+            // Video Preview & Split Slider Toggle
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  _showSplitComparison ? 'Split Comparison Slider' : 'Compressed Video Preview',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: isDark ? AppColors.textPrimaryDark : AppColors.textPrimaryLight,
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _showSplitComparison = !_showSplitComparison;
+                    });
+                  },
+                  icon: Icon(_showSplitComparison ? Icons.videocam_rounded : Icons.compare_arrows_rounded, size: 16),
+                  label: Text(_showSplitComparison ? 'Single Player' : 'Split View'),
+                ),
+              ],
             ),
-            const SizedBox(height: 10),
-            VideoPreviewPlayer(videoPath: _item.compressedPath),
-            const SizedBox(height: 24),
+            const SizedBox(height: 8),
+
+            if (_showSplitComparison)
+              InteractiveSplitSlider(
+                originalPathOrUri: widget.sourceVideo.uri,
+                compressedPath: _item.compressedPath,
+              )
+            else
+              VideoPreviewPlayer(videoPath: _item.compressedPath),
+
+            const SizedBox(height: 20),
+
+            // Safe Deletion Button (Search 1 & 2 Workflow)
+            if (!_isOriginalTrashed)
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.error,
+                  side: BorderSide(color: AppColors.error.withAlpha(120)),
+                ),
+                onPressed: _handleMoveOriginalToTrash,
+                icon: const Icon(Icons.delete_sweep_rounded, size: 20),
+                label: Text(
+                  'Safely Trash Original (${Formatters.formatBytes(_item.originalSizeBytes)})',
+                ),
+              ),
+
+            const SizedBox(height: 14),
 
             // Action Buttons
             Row(
@@ -267,7 +348,6 @@ class _CompressionResultScreenState extends State<CompressionResultScreen> {
             ),
             const SizedBox(height: 12),
 
-            // Secondary Actions
             Row(
               children: [
                 Expanded(

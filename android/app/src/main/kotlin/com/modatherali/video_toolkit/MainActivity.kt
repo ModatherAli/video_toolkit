@@ -1,15 +1,20 @@
 package com.modatherali.video_toolkit
 
 import android.app.Activity
+import android.content.ContentUris
 import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.StatFs
 import android.provider.MediaStore
 import android.provider.OpenableColumns
@@ -41,8 +46,10 @@ class MainActivity : FlutterActivity() {
     private val METHOD_CHANNEL = "com.modatherali.video_toolkit/compressor"
     private val EVENT_CHANNEL = "com.modatherali.video_toolkit/compression_events"
     private val REQUEST_CODE_PICK_VIDEO = 1001
+    private val REQUEST_CODE_TRASH_ORIGINALS = 1002
 
     private var pendingPickResult: MethodChannel.Result? = null
+    private var pendingTrashResult: MethodChannel.Result? = null
     private var eventSink: EventChannel.EventSink? = null
 
     private var activeTransformer: Transformer? = null
@@ -58,10 +65,18 @@ class MainActivity : FlutterActivity() {
                 "pickVideo" -> handlePickVideo(result)
                 "getVideoMetadata" -> handleGetVideoMetadata(call, result)
                 "startCompression" -> handleStartCompression(call, result)
+                "createQuickSample" -> handleCreateQuickSample(call, result)
                 "cancelCompression" -> handleCancelCompression(result)
                 "saveToGallery" -> handleSaveToGallery(call, result)
                 "getAvailableStorage" -> handleGetAvailableStorage(result)
                 "openVideoFile" -> handleOpenVideoFile(call, result)
+                "startForegroundNotification" -> handleStartForegroundNotification(call, result)
+                "updateForegroundNotification" -> handleUpdateForegroundNotification(call, result)
+                "stopForegroundNotification" -> handleStopForegroundNotification(result)
+                "requestTrashFiles" -> handleRequestTrashFiles(call, result)
+                "queryLargestMediaFiles" -> handleQueryLargestMediaFiles(call, result)
+                "verifyOutputFile" -> handleVerifyOutputFile(call, result)
+                "getDeviceSafetyStatus" -> handleGetDeviceSafetyStatus(result)
                 else -> result.notImplemented()
             }
         }
@@ -103,6 +118,12 @@ class MainActivity : FlutterActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CODE_TRASH_ORIGINALS) {
+            val result = pendingTrashResult ?: return
+            pendingTrashResult = null
+            result.success(resultCode == Activity.RESULT_OK)
+            return
+        }
         if (requestCode == REQUEST_CODE_PICK_VIDEO) {
             val result = pendingPickResult ?: return
             pendingPickResult = null
@@ -489,6 +510,335 @@ class MainActivity : FlutterActivity() {
             result.success(true)
         } catch (e: Exception) {
             result.error("OPEN_FAILED", "Failed to open video: ${e.message}", null)
+        }
+    }
+
+    private fun handleStartForegroundNotification(call: MethodCall, result: MethodChannel.Result) {
+        val title = call.argument<String>("title") ?: "Compressing Videos"
+        val message = call.argument<String>("message") ?: "Processing in background"
+        val progress = call.argument<Int>("progress") ?: 0
+        try {
+            CompressionForegroundService.startService(this, title, message, progress)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("FOREGROUND_ERROR", "Failed to start foreground service: ${e.message}", null)
+        }
+    }
+
+    private fun handleUpdateForegroundNotification(call: MethodCall, result: MethodChannel.Result) {
+        val title = call.argument<String>("title") ?: "Compressing Videos"
+        val message = call.argument<String>("message") ?: "Processing"
+        val progress = call.argument<Int>("progress") ?: 0
+        try {
+            CompressionForegroundService.updateService(this, title, message, progress)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("FOREGROUND_ERROR", "Failed to update notification: ${e.message}", null)
+        }
+    }
+
+    private fun handleStopForegroundNotification(result: MethodChannel.Result) {
+        try {
+            CompressionForegroundService.stopService(this)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("FOREGROUND_ERROR", "Failed to stop service: ${e.message}", null)
+        }
+    }
+
+    private fun handleCreateQuickSample(call: MethodCall, result: MethodChannel.Result) {
+        val sourceUri = call.argument<String>("sourceUri")
+        val outputPath = call.argument<String>("outputPath")
+        val targetWidth = call.argument<Int>("targetWidth") ?: 0
+        val targetHeight = call.argument<Int>("targetHeight") ?: 0
+        val videoBitrate = call.argument<Int>("videoBitrate") ?: 0
+        val videoCodec = call.argument<String>("videoCodec") ?: "H264"
+        val sampleDurationSec = call.argument<Int>("sampleDurationSec") ?: 5
+
+        if (sourceUri.isNullOrBlank() || outputPath.isNullOrBlank()) {
+            result.error("INVALID_ARGUMENT", "sourceUri and outputPath must be provided", null)
+            return
+        }
+
+        val outFile = File(outputPath)
+        outFile.parentFile?.mkdirs()
+        if (outFile.exists()) {
+            outFile.delete()
+        }
+
+        try {
+            val baseItem = if (sourceUri.startsWith("content://")) {
+                MediaItem.fromUri(Uri.parse(sourceUri))
+            } else {
+                MediaItem.fromUri(Uri.fromFile(File(sourceUri)))
+            }
+
+            val clippingConfig = MediaItem.ClippingConfiguration.Builder()
+                .setStartPositionMs(0L)
+                .setEndPositionMs(sampleDurationSec * 1000L)
+                .build()
+
+            val clippedMediaItem = baseItem.buildUpon()
+                .setClippingConfiguration(clippingConfig)
+                .build()
+
+            val editedItemBuilder = EditedMediaItem.Builder(clippedMediaItem)
+            if (targetWidth > 0 && targetHeight > 0) {
+                val presentation = Presentation.createForWidthAndHeight(
+                    (targetWidth / 2) * 2,
+                    (targetHeight / 2) * 2,
+                    Presentation.LAYOUT_SCALE_TO_FIT
+                )
+                editedItemBuilder.setEffects(Effects(emptyList(), listOf(presentation)))
+            }
+
+            val encoderFactoryBuilder = DefaultEncoderFactory.Builder(this)
+            if (videoBitrate > 0) {
+                encoderFactoryBuilder.setRequestedVideoEncoderSettings(
+                    VideoEncoderSettings.Builder()
+                        .setBitrate(videoBitrate)
+                        .build()
+                )
+            }
+
+            val videoMime = if (videoCodec.equals("H265", ignoreCase = true)) {
+                MimeTypes.VIDEO_H265
+            } else {
+                MimeTypes.VIDEO_H264
+            }
+
+            val sampleTransformer = Transformer.Builder(this)
+                .setVideoMimeType(videoMime)
+                .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                .setEncoderFactory(encoderFactoryBuilder.build())
+                .addListener(object : Transformer.Listener {
+                    override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                        mainHandler.post { result.success(outputPath) }
+                    }
+
+                    override fun onError(
+                        composition: Composition,
+                        exportResult: ExportResult,
+                        exportException: ExportException
+                    ) {
+                        outFile.delete()
+                        mainHandler.post {
+                            result.error("SAMPLE_ERROR", exportException.message ?: "Sample generation failed", null)
+                        }
+                    }
+                })
+                .build()
+
+            sampleTransformer.start(editedItemBuilder.build(), outputPath)
+        } catch (e: Exception) {
+            outFile.delete()
+            result.error("SAMPLE_START_FAILED", "Failed to start quick sample: ${e.message}", null)
+        }
+    }
+
+    private fun handleRequestTrashFiles(call: MethodCall, result: MethodChannel.Result) {
+        val filePathsOrUris = call.argument<List<String>>("files") ?: emptyList()
+        if (filePathsOrUris.isEmpty()) {
+            result.success(true)
+            return
+        }
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val uris = filePathsOrUris.mapNotNull { str ->
+                    if (str.startsWith("content://")) {
+                        Uri.parse(str)
+                    } else {
+                        val projection = arrayOf(MediaStore.MediaColumns._ID)
+                        val cursor = contentResolver.query(
+                            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                            projection,
+                            "${MediaStore.MediaColumns.DATA} = ?",
+                            arrayOf(str),
+                            null
+                        )
+                        cursor?.use {
+                            if (it.moveToFirst()) {
+                                val id = it.getLong(it.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                                ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                            } else null
+                        }
+                    }
+                }
+
+                if (uris.isNotEmpty()) {
+                    pendingTrashResult = result
+                    val pendingIntent = MediaStore.createTrashRequest(contentResolver, uris, true)
+                    startIntentSenderForResult(
+                        pendingIntent.intentSender,
+                        REQUEST_CODE_TRASH_ORIGINALS,
+                        null,
+                        0,
+                        0,
+                        0
+                    )
+                    return
+                }
+            }
+
+            var allDeleted = true
+            for (p in filePathsOrUris) {
+                val file = File(p)
+                if (file.exists()) {
+                    val deleted = file.delete()
+                    if (!deleted) allDeleted = false
+                }
+            }
+            result.success(allDeleted)
+        } catch (e: Exception) {
+            result.error("TRASH_ERROR", "Failed to move files to trash: ${e.message}", null)
+        }
+    }
+
+    private fun handleQueryLargestMediaFiles(call: MethodCall, result: MethodChannel.Result) {
+        val limit = call.argument<Int>("limit") ?: 25
+        Thread {
+            try {
+                val mediaList = mutableListOf<Map<String, Any?>>()
+                val projection = arrayOf(
+                    MediaStore.Video.Media._ID,
+                    MediaStore.Video.Media.DISPLAY_NAME,
+                    MediaStore.Video.Media.SIZE,
+                    MediaStore.Video.Media.DURATION,
+                    MediaStore.Video.Media.DATE_MODIFIED,
+                    MediaStore.Video.Media.DATA
+                )
+                val sortOrder = "${MediaStore.Video.Media.SIZE} DESC LIMIT $limit"
+
+                contentResolver.query(
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                    projection,
+                    "${MediaStore.Video.Media.SIZE} > 0",
+                    null,
+                    sortOrder
+                )?.use { cursor ->
+                    val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
+                    val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+                    val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
+                    val durCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
+                    val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
+                    val dataCol = cursor.getColumnIndex(MediaStore.Video.Media.DATA)
+
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getLong(idCol)
+                        val name = cursor.getString(nameCol) ?: "Video_$id"
+                        val size = cursor.getLong(sizeCol)
+                        val dur = cursor.getLong(durCol)
+                        val date = cursor.getLong(dateCol)
+                        val path = if (dataCol >= 0) cursor.getString(dataCol) else null
+                        val uri = ContentUris.withAppendedId(
+                            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                            id
+                        ).toString()
+
+                        mediaList.add(
+                            mapOf(
+                                "id" to id.toString(),
+                                "uri" to uri,
+                                "name" to name,
+                                "size" to size,
+                                "durationMs" to dur,
+                                "dateModified" to date,
+                                "path" to path
+                            )
+                        )
+                    }
+                }
+                mainHandler.post { result.success(mediaList) }
+            } catch (e: Exception) {
+                mainHandler.post {
+                    result.error("QUERY_ERROR", "Failed to query media: ${e.message}", null)
+                }
+            }
+        }.start()
+    }
+
+    private fun handleVerifyOutputFile(call: MethodCall, result: MethodChannel.Result) {
+        val filePath = call.argument<String>("filePath")
+        if (filePath.isNullOrBlank()) {
+            result.error("INVALID_ARGUMENT", "filePath must not be null", null)
+            return
+        }
+
+        Thread {
+            try {
+                val file = File(filePath)
+                if (!file.exists() || file.length() == 0L) {
+                    mainHandler.post {
+                        result.success(
+                            mapOf(
+                                "isValid" to false,
+                                "hasAudio" to false,
+                                "fileSize" to 0L,
+                                "error" to "Output file is missing or empty"
+                            )
+                        )
+                    }
+                    return@Thread
+                }
+
+                val retriever = MediaMetadataRetriever()
+                var hasAudio = false
+                var durationMs = 0L
+                try {
+                    retriever.setDataSource(file.absolutePath)
+                    hasAudio = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) != null
+                    durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                } finally {
+                    try { retriever.release() } catch (_: Exception) {}
+                }
+
+                mainHandler.post {
+                    result.success(
+                        mapOf(
+                            "isValid" to true,
+                            "hasAudio" to hasAudio,
+                            "fileSize" to file.length(),
+                            "durationMs" to durationMs
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                mainHandler.post {
+                    result.error("VERIFY_ERROR", "Failed to verify output: ${e.message}", null)
+                }
+            }
+        }.start()
+    }
+
+    private fun handleGetDeviceSafetyStatus(result: MethodChannel.Result) {
+        try {
+            val batteryFilter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            val batteryStatus: Intent? = registerReceiver(null, batteryFilter)
+            val level: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            val batteryPct: Int = if (level >= 0 && scale > 0) ((level / scale.toFloat()) * 100).toInt() else 100
+
+            val status: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val isCharging: Boolean = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == BatteryManager.BATTERY_STATUS_FULL
+
+            var isThermalThrottling = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                val thermal = powerManager?.currentThermalStatus ?: PowerManager.THERMAL_STATUS_NONE
+                isThermalThrottling = thermal >= PowerManager.THERMAL_STATUS_MODERATE
+            }
+
+            result.success(
+                mapOf(
+                    "batteryLevel" to batteryPct,
+                    "isCharging" to isCharging,
+                    "isThermalThrottling" to isThermalThrottling
+                )
+            )
+        } catch (e: Exception) {
+            result.error("SAFETY_ERROR", "Failed to get device safety status: ${e.message}", null)
         }
     }
 }

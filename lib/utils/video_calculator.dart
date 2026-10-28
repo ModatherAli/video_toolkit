@@ -79,6 +79,75 @@ class VideoCalculator {
     return target.clamp(300000, 10000000);
   }
 
+  /// Calculates video bitrate in bps needed to hit an exact target file size.
+  /// Deducts audio bitrate (default 128 kbps) and leaves a 5% margin for MP4 container overhead.
+  static int calculateBitrateForTargetSize({
+    required int targetSizeBytes,
+    required int durationMs,
+    int audioBitrate = 128000,
+  }) {
+    final durationSec = math.max(1.0, durationMs / 1000.0);
+    // 95% for media payload to prevent exceeding limit due to MP4 metadata/container
+    final totalAvailableBitrate = (targetSizeBytes * 8 * 0.95) / durationSec;
+    final videoBitrate = (totalAvailableBitrate - audioBitrate).round();
+
+    // Clamp between 150 kbps (ultra compact) and 25 Mbps
+    return videoBitrate.clamp(150000, 25000000);
+  }
+
+  /// Determines optimal resolution cap based on available video bitrate to prevent pixelation.
+  static int getRecommendedMaxDimensionForBitrate(int videoBitrate) {
+    if (videoBitrate >= 2500000) return 1080;
+    if (videoBitrate >= 1100000) return 720;
+    if (videoBitrate >= 450000) return 480;
+    if (videoBitrate >= 240000) return 360;
+    return 240;
+  }
+
+  /// Estimates the compressed file size in bytes given bitrates and duration.
+  static int estimateCompressedSizeBytes({
+    required int videoBitrate,
+    required int durationMs,
+    int audioBitrate = 128000,
+  }) {
+    final durationSec = durationMs / 1000.0;
+    final totalBitrate = videoBitrate + audioBitrate;
+    // 1.03 for MP4 moov/mdat container overhead
+    return ((totalBitrate / 8.0) * durationSec * 1.03).round();
+  }
+
+  /// Evaluates estimated visual quality based on target bitrate and resolution.
+  static ({String label, String detail}) estimateQualityDescription({
+    required int videoBitrate,
+    required int width,
+    required int height,
+  }) {
+    final pixels = width * height;
+    final bitsPerPixel = videoBitrate / (pixels > 0 ? pixels : 1280 * 720);
+
+    if (bitsPerPixel >= 2.5) {
+      return (
+        label: 'Excellent',
+        detail: 'Sharp details, pristine faces & readable text.'
+      );
+    } else if (bitsPerPixel >= 1.2) {
+      return (
+        label: 'Great',
+        detail: 'Clear faces and motion. Perfect for social sharing.'
+      );
+    } else if (bitsPerPixel >= 0.6) {
+      return (
+        label: 'Good (Fit for Chat)',
+        detail: 'Good visibility. Fine background details may soften.'
+      );
+    } else {
+      return (
+        label: 'Maximum Savings',
+        detail: 'High compression. Noticeable softening, small file.'
+      );
+    }
+  }
+
   /// Formats resolution into a user-friendly label (e.g. 1080p, 720p, 480p).
   static String getResolutionLabel(int width, int height) {
     if (width <= 0 || height <= 0) return 'Unknown';

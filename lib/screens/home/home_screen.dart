@@ -2,11 +2,16 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import '../../models/history_item.dart';
+import '../../services/device_safety_service.dart';
 import '../../services/history_repository.dart';
 import '../../services/video_compressor_service.dart';
 import '../../theme/app_colors.dart';
 import '../../utils/formatters.dart';
+import '../audio/audio_compressor_screen.dart';
+import '../batch/batch_queue_screen.dart';
+import '../cleaner/storage_cleaner_screen.dart';
 import '../history/history_screen.dart';
+import '../settings/safety_settings_screen.dart';
 import '../setup/compression_setup_screen.dart';
 import 'widgets/privacy_banner.dart';
 import 'widgets/recent_compressions_list.dart';
@@ -27,13 +32,22 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  late final DeviceSafetyService _safetyService;
   int _freeBytes = 0;
   bool _isLoading = false;
 
   @override
   void initState() {
     super.initState();
+    _safetyService = DeviceSafetyService(compressorService: widget.compressorService);
+    _safetyService.loadSettings();
     _loadStorageInfo();
+  }
+
+  @override
+  void dispose() {
+    _safetyService.dispose();
+    super.dispose();
   }
 
   Future<void> _loadStorageInfo() async {
@@ -93,26 +107,89 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _handleBatchSelect() async {
+    setState(() => _isLoading = true);
+    try {
+      final videos = await widget.compressorService.pickMultipleVideos();
+      if (!mounted) return;
+
+      if (videos.isNotEmpty) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => BatchQueueScreen(
+              initialVideos: videos,
+              compressorService: widget.compressorService,
+              historyRepository: widget.historyRepository,
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error selecting videos: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  void _openStorageCleaner() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => StorageCleanerScreen(
+          compressorService: widget.compressorService,
+          historyRepository: widget.historyRepository,
+        ),
+      ),
+    );
+  }
+
+  void _openAudioCompressor() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => AudioCompressorScreen(
+          compressorService: widget.compressorService,
+        ),
+      ),
+    );
+  }
+
+  void _openSafetySettings() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SafetySettingsScreen(
+          safetyService: _safetyService,
+        ),
+      ),
+    );
+  }
+
   void _handlePlayHistoryItem(HistoryItem item) {
     widget.compressorService.openVideoFile(item.compressedPath);
   }
 
   void _handleShareHistoryItem(HistoryItem item) {
-    if (File(item.compressedPath).existsSync()) {
-      SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(item.compressedPath)],
-          text: 'Compressed with OptiVideo (${item.formattedCompressedSize})',
-        ),
-      );
-    } else {
+    final file = File(item.compressedPath);
+    if (!file.existsSync()) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Video file not found on disk.'),
-          backgroundColor: AppColors.warning,
+          content: Text('File not found on device to share.'),
+          backgroundColor: AppColors.error,
         ),
       );
+      return;
     }
+
+    SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(item.compressedPath)],
+        text: 'Compressed with OptiVideo (${item.savingsPercentage.toStringAsFixed(0)}% saved)',
+      ),
+    );
   }
 
   void _handleDeleteHistoryItem(HistoryItem item) {
@@ -188,7 +265,7 @@ class _HomeScreenState extends State<HomeScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  'OptiVideo is a fast, 100% offline video compressor designed for Android.',
+                  'OptiVideo is an offline video and audio compression toolkit designed for Android.',
                   style: TextStyle(fontSize: 14, height: 1.4),
                 ),
                 SizedBox(height: 12),
@@ -197,11 +274,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
                 ),
                 SizedBox(height: 6),
-                Text('• 100% Offline: No internet connection is ever requested or used.'),
-                Text('• Hardware Accelerated: Powered by AndroidX Media3 Transformer for fast, battery-efficient encoding.'),
-                Text('• Privacy First: Videos stay exclusively on your device storage.'),
-                Text('• Scoped Storage Compliant: Saves directly to public Movies/OptiVideo album.'),
-                Text('• Real Progress: Genuine hardware encoder progress monitoring.'),
+                Text('• 100% Offline: No internet permission, zero server uploads.'),
+                Text('• Fit to App: One-tap presets for WhatsApp (14MB), Discord, and Email.'),
+                Text('• Target Size: Specify exact MB limit and let bitrate adapt automatically.'),
+                Text('• Batch Mode: Compress dozens of videos in background with persistent notification.'),
+                Text('• Storage Cleaner: Free up GBs with safe 30-day Android System Trash.'),
+                Text('• Audio Studio: Compress MP3, M4A, podcasts with vocal clarity and silence trimming.'),
+                Text('• Thermal Protection: Safe compression that prevents phone overheating.'),
               ],
             ),
           ),
@@ -243,6 +322,11 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.shield_outlined),
+            tooltip: 'Battery & Thermal Safety',
+            onPressed: _openSafetySettings,
+          ),
           ValueListenableBuilder<List<HistoryItem>>(
             valueListenable: widget.historyRepository.historyNotifier,
             builder: (context, history, _) {
@@ -282,11 +366,9 @@ class _HomeScreenState extends State<HomeScreen> {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
           children: [
-            // Privacy Banner
             const PrivacyBanner(),
             const SizedBox(height: 14),
 
-            // Storage and Status row
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -320,11 +402,65 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 16),
 
-            // Main Select Video Hero Card (ui_ideas design)
+            // Hero Select Single Video Card
             _buildSelectHeroCard(context, theme, colorScheme),
+            const SizedBox(height: 18),
+
+            // Quick Toolkit Features Grid
+            Row(
+              children: [
+                Expanded(
+                  child: _buildToolkitCard(
+                    context: context,
+                    icon: Icons.burst_mode_rounded,
+                    title: 'Batch Mode',
+                    subtitle: 'Multi-video queue',
+                    onTap: _handleBatchSelect,
+                    colorScheme: colorScheme,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _buildToolkitCard(
+                    context: context,
+                    icon: Icons.cleaning_services_rounded,
+                    title: 'Storage Cleaner',
+                    subtitle: 'Reclaim space',
+                    onTap: _openStorageCleaner,
+                    colorScheme: colorScheme,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildToolkitCard(
+                    context: context,
+                    icon: Icons.graphic_eq_rounded,
+                    title: 'Audio Studio',
+                    subtitle: 'MP3 & Podcasts',
+                    onTap: _openAudioCompressor,
+                    colorScheme: colorScheme,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _buildToolkitCard(
+                    context: context,
+                    icon: Icons.battery_charging_full_rounded,
+                    title: 'Thermal Safety',
+                    subtitle: 'Protect device',
+                    onTap: _openSafetySettings,
+                    colorScheme: colorScheme,
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 24),
 
-            // Recent compressions list or How It Works empty state
+            // Recent Compressions or Empty State
             ValueListenableBuilder<List<HistoryItem>>(
               valueListenable: widget.historyRepository.historyNotifier,
               builder: (context, items, _) {
@@ -399,28 +535,104 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Reduce large 4K and 1080p videos for fast sharing and extra storage while keeping crisp visual quality. Original videos are never overwritten.',
+              'Target exact MB sizes for WhatsApp, Discord, & Email, or reclaim storage in batch. 100% offline & hardware accelerated.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: colorScheme.onSurfaceVariant,
                 height: 1.4,
               ),
             ),
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: _isLoading ? null : _handleSelectVideo,
-              icon: _isLoading
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2.5),
-                    )
-                  : const Icon(Icons.add_photo_alternate_rounded),
-              label: Text(
-                _isLoading ? 'Opening Video Picker…' : 'Select Video',
-              ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size(0, 50),
+                    ),
+                    onPressed: _isLoading ? null : _handleSelectVideo,
+                    icon: _isLoading
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2.5),
+                          )
+                        : const Icon(Icons.add_photo_alternate_rounded),
+                    label: Text(_isLoading ? 'Opening Picker…' : 'Select Video'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(0, 50),
+                    ),
+                    onPressed: _isLoading ? null : _handleBatchSelect,
+                    icon: const Icon(Icons.burst_mode_rounded, size: 18),
+                    label: const Text('Batch Mode'),
+                  ),
+                ),
+              ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildToolkitCard({
+    required BuildContext context,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+    required ColorScheme colorScheme,
+  }) {
+    return Card(
+      elevation: 0,
+      color: colorScheme.surfaceContainerHighest.withAlpha(80),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: colorScheme.outlineVariant.withAlpha(60)),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: colorScheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: colorScheme.onPrimaryContainer, size: 20),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
